@@ -26,6 +26,8 @@ import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Newspaper
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Tv
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.ContactSupport
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -163,12 +165,20 @@ fun AppNavigation(
                                }
                            }
 
-                            // Right: Search & Profile
+                            // Right: Search, Contact & Profile
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 IconButton(onClick = { navController.navigate("Search") }) {
                                     Icon(
                                         Icons.Default.Search,
                                         "Search",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(21.dp)
+                                    )
+                                }
+                                IconButton(onClick = { navController.navigate("ContactUs") }) {
+                                    Icon(
+                                        Icons.Default.ContactSupport,
+                                        "Contact Us",
                                         tint = Color.White,
                                         modifier = Modifier.size(21.dp)
                                     )
@@ -474,6 +484,9 @@ fun AppNavigation(
                         type = "Science-Fiction",
                         onMovieClick = navigateToDetails
                     )
+                }
+                composable("ContactUs") {
+                    com.notifiy.interplanetary.ui.screens.ContactUsScreen(onBackClick = { navController.popBackStack() })
                 }
             }
         }

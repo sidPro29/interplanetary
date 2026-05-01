@@ -98,7 +98,7 @@ fun NewsDetailScreen(
                             // Article Header (Meta)
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
-                                    text = "Interplanetary News",
+                                    text = article.getAuthorName().uppercase(),
                                     color = Color(0xFF6C63FF),
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.Bold
