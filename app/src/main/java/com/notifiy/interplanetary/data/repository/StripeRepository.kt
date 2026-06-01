@@ -30,7 +30,7 @@ class StripeRepository @Inject constructor(
         // If no user token, use admin credentials to fetch plans for public visibility
         if (wpToken.isNullOrEmpty()) {
             try {
-                val adminLoginRes = apiService.login(com.notifiy.interplanetary.data.model.LoginRequest("siddhartha.verma", "sidSat@6213#"))
+                val adminLoginRes = apiService.login(com.notifiy.interplanetary.data.model.LoginRequest(BuildConfig.WP_ADMIN_USER, BuildConfig.WP_ADMIN_PASSWORD))
                 wpToken = adminLoginRes.token
             } catch (e: Exception) {
                 Log.e(TAG, "Admin login for plans failed: ${e.message}")
@@ -117,7 +117,7 @@ class StripeRepository @Inject constructor(
 
             // 1. Log in as Administrator to perform the upgrade API call
             val adminLoginRes = try {
-                apiService.login(com.notifiy.interplanetary.data.model.LoginRequest("siddhartha.verma", "sidSat@6213#"))
+                apiService.login(com.notifiy.interplanetary.data.model.LoginRequest(BuildConfig.WP_ADMIN_USER, BuildConfig.WP_ADMIN_PASSWORD))
             } catch (e: Exception) { 
                 Log.e(TAG, "Admin login failed: ${e.message}")
                 null 
@@ -147,7 +147,9 @@ class StripeRepository @Inject constructor(
                     firestore.collection("itv_purchase")
                         .document(purchase.purchase_id)
                         .set(purchase)
-                        .await()
+                        .addOnFailureListener { e ->
+                            Log.e(TAG, "Error saving purchase to Firestore: ${e.message}")
+                        }
                     
                     // 3. Update local session
                     sessionManager.updateActivePlan(plan.name)
