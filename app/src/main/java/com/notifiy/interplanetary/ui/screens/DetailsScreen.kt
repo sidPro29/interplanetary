@@ -34,6 +34,13 @@ import com.notifiy.interplanetary.ui.components.MovieCard
 import com.notifiy.interplanetary.ui.theme.*
 import com.notifiy.interplanetary.ui.viewmodel.DetailsViewModel
 
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import android.net.Uri
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import android.util.Log
+import com.notifiy.interplanetary.data.util.VideoUrlManager
+
 @Composable
 fun DetailsScreen(
     id: Int,
@@ -43,7 +50,7 @@ fun DetailsScreen(
     isVideoAvailable: Boolean,
     isLoggedIn: Boolean,
     onLoginRequired: () -> Unit,
-    onPlayClick: () -> Unit,
+    onPlayClick: (String) -> Unit,
     onSubscribeClick: () -> Unit,
     onMovieClick: (Post) -> Unit,
     viewModel: DetailsViewModel = hiltViewModel()
@@ -59,19 +66,164 @@ fun DetailsScreen(
         viewModel.loadDetails(id)
     }
 
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var isVideoResolving by remember { mutableStateOf(false) }
+    var isVideoReady by remember { mutableStateOf(false) }
+    var backgroundVideoUrl by remember { mutableStateOf("") }
+
+    LaunchedEffect(post) {
+        val currentPost = post ?: return@LaunchedEffect
+        isVideoResolving = true
+        isVideoReady = false
+        backgroundVideoUrl = ""
+        try {
+            var clipId: String? = null
+            var directUrl: String? = null
+
+            val type = currentPost.type.lowercase()
+            if (type == "movie" || type == "movies") {
+                clipId = currentPost.trailer?.get("clipId") as? String
+                if (clipId.isNullOrEmpty()) {
+                    directUrl = currentPost.trailer?.get("ytUrl") as? String
+                        ?: currentPost.trailer?.get("youtube") as? String
+                }
+            } else if (type == "tvshow" || type == "tvshows") {
+                clipId = currentPost.videos?.get("clipId") as? String
+                if (clipId.isNullOrEmpty()) {
+                    directUrl = currentPost.videos?.get("ytUrl") as? String
+                        ?: currentPost.videos?.get("youtube") as? String
+                }
+            } else if (type == "video") {
+                clipId = currentPost.videos?.get("clipId") as? String
+                if (clipId.isNullOrEmpty()) {
+                    directUrl = currentPost.videos?.get("ytUrl") as? String
+                        ?: currentPost.videos?.get("youtube") as? String
+                }
+            }
+
+            val resolved: String = when {
+                !clipId.isNullOrEmpty() -> {
+                    val playbackUrl = "https://api.interplanetary.tv/api/media-assets/playback/$clipId"
+                    withContext(Dispatchers.IO) {
+                        try {
+                            val client = okhttp3.OkHttpClient.Builder()
+                                .followRedirects(true).followSslRedirects(true).build()
+                            val request = okhttp3.Request.Builder()
+                                .url("$playbackUrl?format=json").build()
+                            client.newCall(request).execute().use { response ->
+                                if (response.isSuccessful) {
+                                    val body = response.body?.string() ?: return@withContext ""
+                                    val mapType = object : com.google.gson.reflect.TypeToken<Map<String, Any>>() {}.type
+                                    val map: Map<String, Any> = com.google.gson.Gson().fromJson(body, mapType)
+                                    map["url"] as? String ?: ""
+                                } else ""
+                            }
+                        } catch (e: Exception) {
+                            Log.e("DetailsScreen", "SVP API error: ${e.message}")
+                            ""
+                        }
+                    }
+                }
+                !directUrl.isNullOrEmpty() -> directUrl ?: ""
+                else -> ""
+            }
+
+            backgroundVideoUrl = resolved
+        } catch (e: Exception) {
+            Log.e("DetailsScreen", "Error resolving details background video: ${e.message}", e)
+        } finally {
+            isVideoResolving = false
+        }
+    }
+
+    val imageAlpha by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (isVideoReady) 0f else 0.4f,
+        label = "DetailsImageAlpha"
+    )
+
     Box(modifier = Modifier.fillMaxSize().background(Background)) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = 40.dp)
         ) {
-            // Header Image with Gradient
+            // Header Image with Gradient and Background Video Player
             item {
                 Box(modifier = Modifier.fillMaxWidth().height(450.dp)) {
+                    // Video Player Layer
+                    if (backgroundVideoUrl.isNotEmpty() && !isVideoResolving) {
+                        val isYouTube = backgroundVideoUrl.contains("youtube.com") || backgroundVideoUrl.contains("youtu.be")
+                        val videoId = if (isYouTube) {
+                            Regex("(?:v=|/embed/|youtu\\.be/|/v/)([^#&?]+)").find(backgroundVideoUrl)?.groupValues?.get(1)
+                        } else null
+
+                        when {
+                            isYouTube && videoId != null -> {
+                                androidx.compose.ui.viewinterop.AndroidView(
+                                    factory = { ctx ->
+                                        com.pierfrancescosoffritti.androidyoutubeplayer.core.player.views.YouTubePlayerView(ctx).apply {
+                                            lifecycleOwner.lifecycle.addObserver(this)
+                                            enableAutomaticInitialization = false
+                                            initialize(object : com.pierfrancescosoffritti.androidyoutubeplayer.core.player.listeners.AbstractYouTubePlayerListener() {
+                                                override fun onReady(youTubePlayer: com.pierfrancescosoffritti.androidyoutubeplayer.core.player.YouTubePlayer) {
+                                                    youTubePlayer.mute()
+                                                    youTubePlayer.loadVideo(videoId, 0f)
+                                                    isVideoReady = true
+                                                }
+                                            }, com.pierfrancescosoffritti.androidyoutubeplayer.core.player.options.IFramePlayerOptions.Builder()
+                                                .controls(0)
+                                                .rel(0)
+                                                .origin("https://interplanetary.tv")
+                                                .build())
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                            else -> {
+                                val exoPlayer = remember(backgroundVideoUrl) {
+                                    androidx.media3.exoplayer.ExoPlayer.Builder(context).build().apply {
+                                        repeatMode = androidx.media3.common.Player.REPEAT_MODE_ONE
+                                        playWhenReady = true
+                                        volume = 0f
+                                        val mediaItem = androidx.media3.common.MediaItem.fromUri(android.net.Uri.parse(backgroundVideoUrl))
+                                        setMediaItem(mediaItem)
+                                        prepare()
+                                        addListener(object : androidx.media3.common.Player.Listener {
+                                            override fun onPlaybackStateChanged(state: Int) {
+                                                if (state == androidx.media3.common.Player.STATE_READY) {
+                                                    isVideoReady = true
+                                                }
+                                            }
+                                        })
+                                    }
+                                }
+
+                                DisposableEffect(exoPlayer) {
+                                    onDispose { exoPlayer.release() }
+                                }
+
+                                androidx.compose.ui.viewinterop.AndroidView(
+                                    factory = {
+                                        androidx.media3.ui.PlayerView(it).apply {
+                                            player = exoPlayer
+                                            useController = false
+                                            resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                        }
+                    }
+
+                    // Fallback/loading Image
                     AsyncImage(
                         model = imageUrl,
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier.fillMaxSize(),
+                        alpha = imageAlpha
                     )
                     Box(
                         modifier = Modifier
@@ -114,9 +266,9 @@ fun DetailsScreen(
                         Button(
                             onClick = {
                                 if (viewModel.canWatch()) {
-                                    onPlayClick()
+                                    val playUrl = post?.getEffectiveVideoUrl() ?: ""
+                                    onPlayClick(playUrl)
                                 } else {
-                                    // Premium content: Check login before showing plans
                                     if (!isLoggedIn) {
                                         onLoginRequired()
                                     } else {
@@ -124,20 +276,15 @@ fun DetailsScreen(
                                     }
                                 }
                             },
-                            modifier = Modifier.fillMaxWidth().height(50.dp),
+                            modifier = Modifier.fillMaxWidth().height(50.dp).padding(horizontal = 8.dp),
                             shape = RoundedCornerShape(4.dp),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = if (viewModel.canWatch()) Color.White else Primary,
-                                contentColor = if (viewModel.canWatch()) Color.Black else Color.White
+                                containerColor = Color(0xFF0F4098),
+                                contentColor = Color.White
                             )
                         ) {
-                            Icon(
-                                imageVector = if (viewModel.canWatch()) Icons.Default.PlayArrow else Icons.Default.Favorite,
-                                contentDescription = null
-                            )
-                            Spacer(Modifier.width(8.dp))
                             Text(
-                                text = if (viewModel.canWatch()) "Play" else "Subscribe to Watch",
+                                text = if (viewModel.canWatch()) "▶ Click now to Watch" else "👑 Subscribe to Watch",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 16.sp
                             )
@@ -146,26 +293,63 @@ fun DetailsScreen(
 
                     Spacer(modifier = Modifier.height(24.dp))
 
-                    // Secondary Actions
+                    // Secondary Actions (Circular Buttons matching TV)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceEvenly
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        ActionButton(
-                            icon = if (isInWatchlist) Icons.Default.Check else Icons.Default.Add,
-                            label = "My List",
+                        Button(
                             onClick = { 
                                 viewModel.toggleWatchlist(id)
-                                android.widget.Toast.makeText(context, if (!isInWatchlist) "Added to List" else "Removed from List", android.widget.Toast.LENGTH_SHORT).show()
-                            }
-                        )
-                        ActionButton(
-                            icon = if (isLiked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                            label = "Rate",
+                                val message = if (!isInWatchlist) "Added to Watchlist" else "Removed from Watchlist"
+                                android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
+                            },
+                            shape = CircleShape,
+                            modifier = Modifier.padding(horizontal = 8.dp).size(48.dp),
+                            contentPadding = PaddingValues(top = 4.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color.White.copy(alpha = 0.1f),
+                                contentColor = Color.White
+                            )
+                        ) {
+                            Text(if (isInWatchlist) "✓" else "+", fontSize = 20.sp)
+                        }
+
+                        Button(
                             onClick = { 
                                 viewModel.toggleLiked(id)
-                            }
-                        )
+                                val message = if (!isLiked) "Added to Liked" else "Removed from Liked"
+                                android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
+                            },
+                            shape = CircleShape,
+                            modifier = Modifier.padding(horizontal = 8.dp).size(48.dp),
+                            contentPadding = PaddingValues(top = 4.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color.White.copy(alpha = 0.1f),
+                                contentColor = Color.White
+                            )
+                        ) {
+                            Text(if (isLiked) "❤️" else "👍", fontSize = 18.sp)
+                        }
+
+                        Button(
+                            onClick = { 
+                                viewModel.togglePlaylist(id)
+                                // Note: Mobile viewModel lacks isInPlaylist state flow but let's mirror action
+                                val message = "Added to Playlist"
+                                android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
+                            },
+                            shape = CircleShape,
+                            modifier = Modifier.padding(horizontal = 8.dp).size(48.dp),
+                            contentPadding = PaddingValues(top = 4.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color.White.copy(alpha = 0.1f),
+                                contentColor = Color.White
+                            )
+                        ) {
+                            Text("🔗", fontSize = 18.sp)
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(24.dp))

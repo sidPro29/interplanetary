@@ -34,6 +34,13 @@ import com.notifiy.interplanetary.ui.theme.TextPrimary
 import com.notifiy.interplanetary.ui.theme.TextSecondary
 import com.notifiy.interplanetary.ui.viewmodel.HomeViewModel
 
+import android.net.Uri
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import android.util.Log
+import com.notifiy.interplanetary.data.util.VideoUrlManager
+
+
 @Composable
 fun HomeScreen(
     modifier: Modifier = Modifier,
@@ -41,12 +48,10 @@ fun HomeScreen(
     onMovieClick: (Post) -> Unit
 ) {
     val state by viewModel.uiState.collectAsState()
-    var selectedPost by remember { mutableStateOf<Post?>(null) }
-
-    LaunchedEffect(state.liveTv, state.top10) {
-        if (selectedPost == null) {
-            selectedPost = state.liveTv.firstOrNull() ?: state.top10.firstOrNull()
-        }
+    val selectedPost = remember(state.liveTv, state.top10) {
+        state.liveTv.find { it.id == 587 || it.mongoId == "587" || it.title.rendered.lowercase().contains("live") }
+            ?: state.liveTv.firstOrNull()
+            ?: state.top10.firstOrNull()
     }
 
     if (state.isLoading) {
@@ -86,40 +91,40 @@ fun HomeScreen(
             )
             {
                 if (state.liveTv.isNotEmpty()) {
-                    item { Section(title = "Live TV", items = state.liveTv, onClick = { selectedPost = it }) }
+                    item { Section(title = "Live TV", items = state.liveTv, onClick = onMovieClick) }
                 }
                 if (state.watchlist.isNotEmpty()) {
-                    item { Section(title = "My Wishlist", items = state.watchlist, onClick = { selectedPost = it }) }
+                    item { Section(title = "My Wishlist", items = state.watchlist, onClick = onMovieClick) }
                 }
                 if (state.top10.isNotEmpty()) {
-                    item { Section(title = "Our Top 10", items = state.top10, onClick = { selectedPost = it }) }
+                    item { Section(title = "Our Top 10", items = state.top10, onClick = onMovieClick) }
                 }
                 if (state.bingeVideos.isNotEmpty()) {
-                    item { Section(title = "Binge Videos", items = state.bingeVideos, onClick = { selectedPost = it }) }
+                    item { Section(title = "Binge Videos", items = state.bingeVideos, onClick = onMovieClick) }
                 }
                 if (state.bingeEpicSeries.isNotEmpty()) {
-                    item { Section(title = "Binge-Epic Series", items = state.bingeEpicSeries, onClick = { selectedPost = it }) }
+                    item { Section(title = "Binge-Epic Series", items = state.bingeEpicSeries, onClick = onMovieClick) }
                 }
                 if (state.mustWatchSpaceEpic.isNotEmpty()) {
-                    item { Section(title = "Must-Watch Space Epics", items = state.mustWatchSpaceEpic, onClick = { selectedPost = it }) }
+                    item { Section(title = "Must-Watch Space Epics", items = state.mustWatchSpaceEpic, onClick = onMovieClick) }
                 }
                 if (state.spaceToGround.isNotEmpty()) {
-                    item { Section(title = "Space-to-Ground Report", items = state.spaceToGround, onClick = { selectedPost = it }) }
+                    item { Section(title = "Space-to-Ground Report", items = state.spaceToGround, onClick = onMovieClick) }
                 }
                 if (state.news.isNotEmpty()) {
-                    item { Section(title = "News", items = state.news, onClick = { selectedPost = it }) }
+                    item { Section(title = "News", items = state.news, onClick = onMovieClick) }
                 }
                 if (state.talkShows.isNotEmpty()) {
-                    item { Section(title = "Talk-Shows", items = state.talkShows, onClick = { selectedPost = it }) }
+                    item { Section(title = "Talk-Shows", items = state.talkShows, onClick = onMovieClick) }
                 }
                 if (state.documentarySeries.isNotEmpty()) {
-                    item { Section(title = "Documentary Series", items = state.documentarySeries, onClick = { selectedPost = it }) }
+                    item { Section(title = "Documentary Series", items = state.documentarySeries, onClick = onMovieClick) }
                 }
                 if (state.documentaryFilms.isNotEmpty()) {
-                    item { Section(title = "Documentary Film", items = state.documentaryFilms, onClick = { selectedPost = it }) }
+                    item { Section(title = "Documentary Film", items = state.documentaryFilms, onClick = onMovieClick) }
                 }
                 if (state.scienceFiction.isNotEmpty()) {
-                    item { Section(title = "Science-Fiction", items = state.scienceFiction, onClick = { selectedPost = it }) }
+                    item { Section(title = "Science-Fiction", items = state.scienceFiction, onClick = onMovieClick) }
                 }
             }
         }
@@ -132,11 +137,21 @@ fun HeroBanner(post: Post, onClick: () -> Unit) {
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
     val videoUrl = post.getEffectiveVideoUrl()
     
-    val isYouTube = videoUrl.contains("youtube.com") || videoUrl.contains("youtu.be")
-    val isEmbed = videoUrl.contains(".php") || videoUrl.contains("webvideocore")
+    var resolvedUrl by remember(videoUrl) { mutableStateOf("") }
+    var isResolving by remember(videoUrl) { mutableStateOf(true) }
+    
+    LaunchedEffect(videoUrl) {
+        if (videoUrl.isNotEmpty()) {
+            isResolving = true
+            resolvedUrl = resolvePlayableUrlLocal(videoUrl)
+            isResolving = false
+        }
+    }
+    
+    val isYouTube = resolvedUrl.contains("youtube.com") || resolvedUrl.contains("youtu.be")
     
     val videoId = if (isYouTube) {
-        Regex("(?:v=|/embed/|youtu\\.be/|/v/)([^#&?]+)").find(videoUrl)?.groupValues?.get(1)
+        Regex("(?:v=|/embed/|youtu\\.be/|/v/)([^#&?]+)").find(resolvedUrl)?.groupValues?.get(1)
     } else null
 
     Box(
@@ -153,14 +168,14 @@ fun HeroBanner(post: Post, onClick: () -> Unit) {
         )
 
         // 2. Player Layer
-        if (videoUrl.isNotEmpty()) {
+        if (resolvedUrl.isNotEmpty() && !isResolving) {
             when {
                 isYouTube && videoId != null -> {
                     androidx.compose.ui.viewinterop.AndroidView(
                         factory = { ctx ->
                             com.pierfrancescosoffritti.androidyoutubeplayer.core.player.views.YouTubePlayerView(ctx).apply {
                                 lifecycleOwner.lifecycle.addObserver(this)
-                                enableAutomaticInitialization = false // Fix: Disable auto-init for manual init
+                                enableAutomaticInitialization = false
                                 initialize(object : com.pierfrancescosoffritti.androidyoutubeplayer.core.player.listeners.AbstractYouTubePlayerListener() {
                                     override fun onReady(youTubePlayer: com.pierfrancescosoffritti.androidyoutubeplayer.core.player.YouTubePlayer) {
                                         youTubePlayer.mute()
@@ -176,69 +191,13 @@ fun HeroBanner(post: Post, onClick: () -> Unit) {
                         modifier = Modifier.fillMaxSize()
                     )
                 }
-                isEmbed -> {
-                    androidx.compose.ui.viewinterop.AndroidView(
-                        factory = { ctx ->
-                            android.webkit.WebView(ctx).apply {
-                                settings.apply {
-                                    javaScriptEnabled = true
-                                    domStorageEnabled = true
-                                    mediaPlaybackRequiresUserGesture = false
-                                    useWideViewPort = true
-                                    loadWithOverviewMode = true
-                                    databaseEnabled = true
-                                    userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
-                                    mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                                }
-                                
-                                webViewClient = object : android.webkit.WebViewClient() {
-                                    override fun onReceivedSslError(view: android.webkit.WebView?, handler: android.webkit.SslErrorHandler?, error: android.net.http.SslError?) {
-                                        handler?.proceed()
-                                    }
-                                }
-                                
-                                val embedHtml = """
-                                    <html>
-                                    <body style="margin:0;padding:0;background:black;">
-                                        <div style="position: relative; padding-bottom: 56.25%; height: 100vh; width: 100vw; overflow: hidden;">
-                                            <iframe src="$videoUrl" 
-                                                    style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: none;" 
-                                                    allow="autoplay; fullscreen" 
-                                                    allowfullscreen>
-                                            </iframe>
-                                        </div>
-                                    </body>
-                                    </html>
-                                """.trimIndent()
-                                loadDataWithBaseURL("https://interplanetary.tv", embedHtml, "text/html", "UTF-8", null)
-                            }
-                        },
-                        modifier = Modifier.fillMaxSize(),
-                        update = { view ->
-                            val embedHtml = """
-                                <html>
-                                <body style="margin:0;padding:0;background:black;">
-                                    <div style="position: relative; padding-bottom: 56.25%; height: 100vh; width: 100vw; overflow: hidden;">
-                                        <iframe src="$videoUrl" 
-                                                style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: none;" 
-                                                allow="autoplay; fullscreen" 
-                                                allowfullscreen>
-                                        </iframe>
-                                    </div>
-                                </body>
-                                </html>
-                            """.trimIndent()
-                            view.loadDataWithBaseURL("https://interplanetary.tv", embedHtml, "text/html", "UTF-8", null)
-                        }
-                    )
-                }
                 else -> {
-                    val exoPlayer = remember(post.id) {
+                    val exoPlayer = remember(resolvedUrl) {
                         androidx.media3.exoplayer.ExoPlayer.Builder(context).build().apply {
                             repeatMode = androidx.media3.common.Player.REPEAT_MODE_ONE
                             playWhenReady = true
                             volume = 0f
-                            val mediaItem = androidx.media3.common.MediaItem.fromUri(android.net.Uri.parse(videoUrl))
+                            val mediaItem = androidx.media3.common.MediaItem.fromUri(android.net.Uri.parse(resolvedUrl))
                             setMediaItem(mediaItem)
                             prepare()
                         }
@@ -363,6 +322,51 @@ fun Section(
                     aspectRatio = 1.77f
                 )
             }
+        }
+    }
+}
+
+private suspend fun resolvePlayableUrlLocal(rawUrl: String): String {
+    val fixed = VideoUrlManager.fixVideoUrl(rawUrl)
+
+    if (fixed.contains("/media-assets/playback/")) {
+        return fetchSvpStreamUrlLocal(fixed) ?: fixed
+    }
+
+    if (fixed.contains("popplayer.php")) {
+        val clipId = Uri.parse(fixed).getQueryParameter("it")
+        if (!clipId.isNullOrEmpty()) {
+            val playbackUrl = "https://api.interplanetary.tv/api/media-assets/playback/$clipId"
+            val resolved = fetchSvpStreamUrlLocal(playbackUrl)
+            if (!resolved.isNullOrEmpty()) return resolved
+        }
+        return ""
+    }
+
+    return fixed
+}
+
+private suspend fun fetchSvpStreamUrlLocal(playbackApiUrl: String): String? {
+    return withContext(Dispatchers.IO) {
+        try {
+            val client = okhttp3.OkHttpClient.Builder()
+                .followRedirects(true)
+                .followSslRedirects(true)
+                .build()
+            val request = okhttp3.Request.Builder()
+                .url("$playbackApiUrl?format=json")
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    val body = response.body?.string() ?: return@withContext null
+                    val mapType = object : com.google.gson.reflect.TypeToken<Map<String, Any>>() {}.type
+                    val map: Map<String, Any> = com.google.gson.Gson().fromJson(body, mapType)
+                    map["url"] as? String
+                } else null
+            }
+        } catch (e: Exception) {
+            Log.e("HeroBanner", "SVP API error: ${e.message}")
+            null
         }
     }
 }

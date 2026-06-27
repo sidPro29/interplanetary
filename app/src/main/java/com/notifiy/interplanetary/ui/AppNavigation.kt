@@ -302,7 +302,7 @@ fun AppNavigation(
                 }
                 composable(
                     "NewsDetail/{articleId}",
-                    arguments = listOf(navArgument("articleId") { type = NavType.IntType })
+                    arguments = listOf(navArgument("articleId") { type = NavType.StringType })
                 ) {
                     val detailViewModel: com.notifiy.interplanetary.ui.viewmodel.NewsDetailViewModel =
                         androidx.hilt.navigation.compose.hiltViewModel()
@@ -432,12 +432,12 @@ fun AppNavigation(
                             val route = "Details/$id/$encodedTitle/$encodedImageUrl?videoUrl=$encodedVideoUrl&description=$encodedDescription"
                             navController.navigate("Login?redirectTo=$route")
                         },
-                        onPlayClick = {
-                            val vUrl = backStackEntry.arguments?.getString("videoUrl") ?: "";
+                        onPlayClick = { playUrl ->
                             val encodedVideoUrl =
-                                URLEncoder.encode(vUrl, StandardCharsets.UTF_8.toString()).replace(
-                                        "+", "%20"
-                                    ); navController.navigate("Player?videoUrl=$encodedVideoUrl")
+                                URLEncoder.encode(playUrl, StandardCharsets.UTF_8.toString()).replace(
+                                    "+", "%20"
+                                )
+                            navController.navigate("Player?videoUrl=$encodedVideoUrl")
                         },
                         onSubscribeClick = { navController.navigate("Plans") },
                         onMovieClick = navigateToDetails
