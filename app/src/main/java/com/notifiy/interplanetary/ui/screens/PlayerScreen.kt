@@ -16,21 +16,23 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import com.pierfrancescosoffritti.androidyoutubeplayer.core.player.PlayerConstants
-import android.webkit.WebResourceError
-import android.webkit.WebResourceRequest
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -45,16 +47,74 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
 import coil.compose.AsyncImage
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.unit.dp
 import android.util.Log
-import androidx.compose.foundation.layout.size
-import androidx.compose.material3.Surface
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.notifiy.interplanetary.R
 import com.notifiy.interplanetary.data.util.VideoUrlManager
 import com.pierfrancescosoffritti.androidyoutubeplayer.core.player.options.IFramePlayerOptions
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+/**
+ * Resolves any kind of raw video URL to a directly playable stream URL.
+ *
+ * Handles:
+ *  1. `/media-assets/playback/<clipId>` → hits the SVP API, returns m3u8/mpd
+ *  2. `popplayer.php?it=<clipId>`       → extracts clipId, same SVP API call
+ *  3. YouTube URLs                       → returned as-is (handled by YouTubePlayer)
+ *  4. Direct HLS/DASH stream URLs        → returned as-is
+ */
+private suspend fun resolvePlayableUrl(rawUrl: String): String {
+    val fixed = VideoUrlManager.fixVideoUrl(rawUrl)
+
+    // Case 1: SVP playback API URL
+    if (fixed.contains("/media-assets/playback/")) {
+        return fetchSvpStreamUrl(fixed) ?: fixed
+    }
+
+    // Case 2: popplayer.php — extract the `it` param (= clipId) and resolve via SVP API
+    if (fixed.contains("popplayer.php")) {
+        val clipId = Uri.parse(fixed).getQueryParameter("it")
+        if (!clipId.isNullOrEmpty()) {
+            val playbackUrl = "https://api.interplanetary.tv/api/media-assets/playback/$clipId"
+            val resolved = fetchSvpStreamUrl(playbackUrl)
+            if (!resolved.isNullOrEmpty()) return resolved
+        }
+        // Could not resolve popplayer URL — return empty so error state is shown
+        return ""
+    }
+
+    // Case 3 & 4: YouTube or direct stream — pass through as-is
+    return fixed
+}
+
+/** Calls the SVP JSON endpoint and extracts the stream URL. */
+private suspend fun fetchSvpStreamUrl(playbackApiUrl: String): String? {
+    return withContext(Dispatchers.IO) {
+        try {
+            val client = okhttp3.OkHttpClient.Builder()
+                .followRedirects(true)
+                .followSslRedirects(true)
+                .build()
+            val request = okhttp3.Request.Builder()
+                .url("$playbackApiUrl?format=json")
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    val body = response.body?.string() ?: return@withContext null
+                    val mapType = object : com.google.gson.reflect.TypeToken<Map<String, Any>>() {}.type
+                    val map: Map<String, Any> = com.google.gson.Gson().fromJson(body, mapType)
+                    map["url"] as? String
+                } else null
+            }
+        } catch (e: Exception) {
+            Log.e("PlayerScreen", "SVP API error for $playbackApiUrl: ${e.message}")
+            null
+        }
+    }
+}
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -63,9 +123,7 @@ fun PlayerScreen(
 ) {
     if (videoUrl.isNullOrEmpty()) {
         Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black),
+            modifier = Modifier.fillMaxSize().background(Color.Black),
             contentAlignment = Alignment.Center
         ) {
             Text(
@@ -77,155 +135,168 @@ fun PlayerScreen(
         return
     }
 
-    val decodedUrl = try {
-        java.net.URLDecoder.decode(videoUrl, "UTF-8")
-    } catch (e: Exception) {
-        videoUrl
+    // All state is on the main thread — we collect the resolved URL here after the suspend call
+    var resolvedUrl by remember { mutableStateOf("") }
+    var isResolving by remember { mutableStateOf(true) }
+
+    LaunchedEffect(videoUrl) {
+        // Reset every time the URL changes
+        isResolving = true
+        resolvedUrl = ""
+
+        val result = resolvePlayableUrl(videoUrl)  // suspends on IO, returns on main thread
+
+        // Both assignments happen on the main thread after suspension — no race condition
+        resolvedUrl = result
+        isResolving = false
+
+        Log.d("PlayerScreen", "Raw URL     : $videoUrl")
+        Log.d("PlayerScreen", "Resolved URL: $result")
+        Log.d("PlayerScreen", "Is YouTube  : ${result.contains("youtube.com") || result.contains("youtu.be")}")
     }
-    val currentVideoUrl = VideoUrlManager.fixVideoUrl(decodedUrl) // Fix IP-based URLs before playback
-    val isYouTube = currentVideoUrl.contains("youtube.com") || currentVideoUrl.contains("youtu.be")
+
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
 
-    // Force Landscape Mode
-    androidx.compose.runtime.DisposableEffect(Unit) {
-        val activity = context as? android.app.Activity
-        activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-        onDispose {
-            activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        }
-    }
+    val currentVideoUrl = resolvedUrl
+    val isYouTube = currentVideoUrl.contains("youtube.com") || currentVideoUrl.contains("youtu.be")
 
-    var hasError by remember { mutableStateOf(false) }
-    var errorMessage by remember { mutableStateOf("We're having trouble playing this video right now.") }
-    var technicalError by remember { mutableStateOf("") }
-    
-    // Extract Video ID
-    // Supports: /embed/, v=, /v/, youtu.be/
     val videoId = if (isYouTube) {
         Regex("(?:v=|/embed/|youtu\\.be/|/v/)([^#&?]+)").find(currentVideoUrl)?.groupValues?.get(1)
     } else null
-    
-    // Fallback logic if Youtube but ID extraction fails (should rarely happen)
-    // If extraction fails, we can't use the library easily, so we might need fallback.
-    // For now assuming ID is found for valid links.
 
     var isLoading by remember { mutableStateOf(true) }
+    var hasError by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf("We're having trouble playing this video right now.") }
+    var technicalError by remember { mutableStateOf("") }
 
-    Log.d("PlayerScreen", "Original URL: $currentVideoUrl")
-    Log.d("PlayerScreen", "Extracted Video ID: $videoId")
+    // Show error immediately if resolution returned empty (e.g. popplayer with no clipId)
+    LaunchedEffect(isResolving, resolvedUrl) {
+        if (!isResolving && resolvedUrl.isEmpty()) {
+            errorMessage = "This video is not available for playback on this device."
+            hasError = true
+            isLoading = false
+        }
+    }
 
     Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
+        modifier = Modifier.fillMaxSize().background(Color.Black)
     ) {
-        if (isYouTube && videoId != null) {
-            // YouTube Player Library
-            AndroidView(
-                factory = { ctx ->
-                    YouTubePlayerView(ctx).apply {
-                        lifecycleOwner.lifecycle.addObserver(this)
-                        enableAutomaticInitialization = false
-                        
-                        val listener = object : AbstractYouTubePlayerListener() {
-                            override fun onReady(youTubePlayer: YouTubePlayer) {
-                                youTubePlayer.loadVideo(videoId, 0f)
-                            }
-                            override fun onStateChange(youTubePlayer: YouTubePlayer, state: PlayerConstants.PlayerState) {
-                                if (state == PlayerConstants.PlayerState.PLAYING) {
+        if (!isResolving && currentVideoUrl.isNotEmpty()) {
+            if (isYouTube && videoId != null) {
+                // ── YouTube fallback player ──────────────────────────────────
+                AndroidView(
+                    factory = { ctx ->
+                        YouTubePlayerView(ctx).apply {
+                            lifecycleOwner.lifecycle.addObserver(this)
+                            enableAutomaticInitialization = false
+
+                            val listener = object : AbstractYouTubePlayerListener() {
+                                override fun onReady(youTubePlayer: YouTubePlayer) {
+                                    youTubePlayer.loadVideo(videoId, 0f)
+                                }
+                                override fun onStateChange(youTubePlayer: YouTubePlayer, state: PlayerConstants.PlayerState) {
+                                    if (state == PlayerConstants.PlayerState.PLAYING) isLoading = false
+                                }
+                                override fun onError(youTubePlayer: YouTubePlayer, error: PlayerConstants.PlayerError) {
+                                    val techMsg = "YouTube error: $error"
+                                    Log.e("itvplaybackerror", "URL: $currentVideoUrl | $techMsg")
+                                    errorMessage = "YouTube video playback failed."
+                                    technicalError = techMsg
+                                    hasError = true
                                     isLoading = false
                                 }
                             }
-                            override fun onError(youTubePlayer: YouTubePlayer, error: PlayerConstants.PlayerError) {
-                                val techMsg = "YouTube Player Error: $error"
-                                Log.e("itvplaybackerror", "Failed URL: $currentVideoUrl | $techMsg")
-                                errorMessage = "YouTube video playback failed."
-                                technicalError = techMsg
-                                hasError = true
-                                isLoading = false
-                            }
+                            initialize(listener, IFramePlayerOptions.Builder()
+                                .controls(1).rel(0).origin("https://interplanetary.tv").build())
                         }
-                        
-                        val options = IFramePlayerOptions.Builder()
-                            .controls(1)
-                            .rel(0)
-                            .origin("https://interplanetary.tv")
-                            //.ivLoadPolicy(3)
-                            //.ccLoadPolicy(1)
-                            .build()
-                            
-            initialize(listener, options)
+                    },
+                    onRelease = { it.release() },
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                // ── Native ExoPlayer for HLS / DASH streams ──────────────────
+                val exoPlayer = remember(currentVideoUrl) {
+                    ExoPlayer.Builder(context).build().apply {
+                        playWhenReady = true
                     }
-                },
-                modifier = Modifier.fillMaxSize()
-            )
-        } else {
-            // Standard ExoPlayer (handles the .m3u8 HLS streams cleanly)
-            val exoPlayer = remember {
-                ExoPlayer.Builder(context).build().apply {
-                    playWhenReady = true
-                    addListener(object : Player.Listener {
+                }
+
+                // Lifecycle-aware pause / resume
+                DisposableEffect(lifecycleOwner, exoPlayer) {
+                    val observer = LifecycleEventObserver { _, event ->
+                        when (event) {
+                            Lifecycle.Event.ON_PAUSE -> exoPlayer.pause()
+                            Lifecycle.Event.ON_RESUME -> if (!hasError) exoPlayer.play()
+                            else -> {}
+                        }
+                    }
+                    lifecycleOwner.lifecycle.addObserver(observer)
+                    onDispose {
+                        lifecycleOwner.lifecycle.removeObserver(observer)
+                        exoPlayer.stop()
+                        exoPlayer.clearMediaItems()
+                        exoPlayer.release()
+                    }
+                }
+
+                // Listener in its own DisposableEffect — never leaked
+                DisposableEffect(exoPlayer) {
+                    val listener = object : Player.Listener {
                         override fun onPlaybackStateChanged(state: Int) {
-                            if (state == Player.STATE_READY) {
-                                isLoading = false
-                            }
+                            if (state == Player.STATE_READY) isLoading = false
                         }
                         override fun onPlayerError(error: PlaybackException) {
-                            val techMsg = "ExoPlayer Error: ${error.message}"
-                            Log.e("itvplaybackerror", "Failed URL: $currentVideoUrl | $techMsg")
-                            errorMessage = "The video format is unsupported or the link is broken."
+                            val techMsg = "ExoPlayer: ${error.message}"
+                            Log.e("itvplaybackerror", "URL: $currentVideoUrl | $techMsg")
+                            errorMessage = "The video format is unsupported or the stream is broken."
                             technicalError = techMsg
                             hasError = true
                             isLoading = false
                         }
-                    })
-                }
-            }
-
-            DisposableEffect(Unit) {
-                onDispose {
-                    exoPlayer.release()
-                }
-            }
-
-            LaunchedEffect(currentVideoUrl) {
-                val mediaItem = MediaItem.fromUri(Uri.parse(currentVideoUrl))
-                exoPlayer.setMediaItem(mediaItem)
-                exoPlayer.prepare()
-            }
-
-            AndroidView(
-                factory = {
-                    PlayerView(it).apply {
-                        player = exoPlayer
-                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                        useController = true
                     }
-                },
-                modifier = Modifier.fillMaxSize()
-            )
+                    exoPlayer.addListener(listener)
+                    onDispose { exoPlayer.removeListener(listener) }
+                }
+
+                // Load media once the resolved URL is ready
+                LaunchedEffect(currentVideoUrl) {
+                    exoPlayer.setMediaItem(MediaItem.fromUri(Uri.parse(currentVideoUrl)))
+                    exoPlayer.prepare()
+                }
+
+                AndroidView(
+                    factory = { ctx ->
+                        PlayerView(ctx).apply {
+                            player = exoPlayer
+                            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                            useController = true
+                            controllerAutoShow = true
+                            controllerHideOnTouch = false
+                        }
+                    },
+                    onRelease = { playerView -> playerView.player = null },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
         }
 
-        // Logo - Reduced for mobile
+        // ── Logo ──────────────────────────────────────────────────────────────
         AsyncImage(
             model = R.drawable.logo,
             contentDescription = "Logo",
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .padding(top = 16.dp, end = 16.dp)
-                .width(120.dp)
-                .height(34.dp),
+                .padding(top = 32.dp, end = 32.dp)
+                .width(100.dp)
+                .height(30.dp),
             contentScale = ContentScale.Fit
         )
 
-        // Loader
-        if (isLoading && !hasError) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
+        // ── Loading spinner ───────────────────────────────────────────────────
+        if ((isLoading || isResolving) && !hasError) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 androidx.compose.material3.CircularProgressIndicator(
                     color = Color(0xFF0066FF),
                     strokeWidth = 4.dp,
@@ -234,21 +305,12 @@ fun PlayerScreen(
             }
         }
 
-        // OTT Error Overlay
+        // ── Error overlay ─────────────────────────────────────────────────────
         if (hasError) {
             val isDebuggable = (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
-            val focusRequester = remember { FocusRequester() }
-
-            LaunchedEffect(hasError) {
-                try {
-                    focusRequester.requestFocus()
-                } catch (e: Exception) {}
-            }
 
             Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color(0xE60A0A0A)),
+                modifier = Modifier.fillMaxSize().background(Color(0xE60A0A0A)),
                 contentAlignment = Alignment.Center
             ) {
                 Column(
@@ -263,41 +325,30 @@ fun PlayerScreen(
                         modifier = Modifier.size(64.dp)
                     )
                     Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        text = "Playback Error",
-                        style = MaterialTheme.typography.displayMedium,
-                        color = Color.White
-                    )
+                    Text("Playback Error", style = MaterialTheme.typography.headlineMedium, color = Color.White)
                     Spacer(modifier = Modifier.height(12.dp))
-                    Text(
-                        text = errorMessage,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = Color(0xFFBBBBBB)
-                    )
-                    
+                    Text(errorMessage, style = MaterialTheme.typography.bodyLarge, color = Color(0xFFBBBBBB))
+
                     if (isDebuggable) {
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            text = "DEV INFO (Will not show in prod):\nURL: $currentVideoUrl\n$technicalError",
+                            text = "DEV INFO:\nRaw URL: $videoUrl\nResolved: $currentVideoUrl\n$technicalError",
                             style = MaterialTheme.typography.bodyMedium,
                             color = Color(0xFFFFFF88)
                         )
                     }
-                    
+
                     Spacer(modifier = Modifier.height(36.dp))
-                    
-                    androidx.compose.material3.Button(
+                    Button(
                         onClick = { backDispatcher?.onBackPressed() },
-                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                        colors = ButtonDefaults.buttonColors(
                             containerColor = Color(0xFF0066FF),
                             contentColor = Color.White
                         ),
                         shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.height(48.dp).width(160.dp).focusRequester(focusRequester)
+                        modifier = Modifier.height(48.dp).width(160.dp)
                     ) {
-                        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                            Text("Go Back", style = MaterialTheme.typography.titleMedium, color = Color.White)
-                        }
+                        Text("Go Back", style = MaterialTheme.typography.titleMedium)
                     }
                 }
             }

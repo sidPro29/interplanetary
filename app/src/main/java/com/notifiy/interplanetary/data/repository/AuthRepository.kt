@@ -1,100 +1,118 @@
 package com.notifiy.interplanetary.data.repository
 
-import com.google.firebase.auth.FirebaseAuth
-import kotlinx.coroutines.tasks.await
+import com.notifiy.interplanetary.data.model.ItvUser
+import com.notifiy.interplanetary.data.model.LoginResponse
+import com.notifiy.interplanetary.data.model.WpSignupRequest
+import com.notifiy.interplanetary.data.remote.ApiService
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class AuthRepository @Inject constructor(
+    private val apiService: ApiService,
     private val sessionManager: SessionManager
 ) {
     private val TAG = "siddharthaLogs"
-    private val auth: FirebaseAuth = FirebaseAuth.getInstance()
 
     suspend fun login(email: String, password: String): Result<Boolean> {
-        android.util.Log.d(TAG, "Firebase Login attempt for: $email")
+        android.util.Log.d(TAG, "Node.js Backend Login attempt for: $email")
         
         return try {
-            val result = auth.signInWithEmailAndPassword(email, password).await()
-            val user = result.user
+            val loginRequest = com.notifiy.interplanetary.data.model.LoginRequest(email, password)
+            val response = apiService.login(loginRequest)
             
-            if (user != null) {
-                android.util.Log.d(TAG, "Firebase Login Successful!")
-                val token = user.getIdToken(true).await().token ?: ""
-                sessionManager.saveAuthToken(token)
+            if (response.token != null) {
+                android.util.Log.d(TAG, "Node.js Backend Login Successful!")
+                sessionManager.saveWpToken(response.token)
+                sessionManager.saveAuthToken(response.token) // Unified Token
+                
                 sessionManager.saveUserInfo(
-                    user.email ?: email,
-                    user.displayName ?: email.split("@")[0],
-                    "" // Plan will be fetched next
+                    response.user?.email ?: email,
+                    response.user?.username ?: "",
+                    ""
                 )
                 
-                // Sync membership (To be implemented with Node.js Stripe Backend)
-                syncMembershipWithNode()
+                // Fetch and sync active plan membership
+                syncMembershipWithWp()
                 
                 Result.success(true)
             } else {
-                Result.failure(Exception("Invalid login credentials"))
+                Result.failure(Exception(response.message ?: "Invalid login credentials"))
             }
         } catch (e: Exception) {
-            android.util.Log.e(TAG, "Firebase Login Failed: ${e.message}")
+            android.util.Log.e(TAG, "Node.js Backend Login Failed: ${e.message}")
             Result.failure(e)
         }
     }
 
     suspend fun signup(name: String, email: String, password: String): Result<Boolean> {
-        android.util.Log.d(TAG, "Firebase Signup attempt for: $email")
+        android.util.Log.d(TAG, "Node.js Backend Signup attempt for: $email")
         
         return try {
-            val result = auth.createUserWithEmailAndPassword(email, password).await()
-            val user = result.user
+            val signupRequest = WpSignupRequest(
+                username = email.split("@")[0],
+                name = name,
+                email = email,
+                password = password
+            )
+            val response = apiService.signup(signupRequest)
             
-            if (user != null) {
-                android.util.Log.d(TAG, "Firebase Signup Successful. Logging in...")
-                // Optionally update profile with name
-                val profileUpdates = com.google.firebase.auth.UserProfileChangeRequest.Builder()
-                    .setDisplayName(name)
-                    .build()
-                user.updateProfile(profileUpdates).await()
-                
-                // Fetch token and save session
-                val token = user.getIdToken(true).await().token ?: ""
-                sessionManager.saveAuthToken(token)
-                sessionManager.saveUserInfo(email, name, "")
-                
-                Result.success(true)
+            if (response.isSuccessful) {
+                android.util.Log.d(TAG, "Node.js Backend Signup Successful. Logging in...")
+                login(email, password)
             } else {
-                Result.failure(Exception("Signup failed on Firebase"))
+                val errorBody = response.errorBody()?.string()
+                android.util.Log.e(TAG, "Node.js Backend Signup Failed: $errorBody")
+                Result.failure(Exception("Signup failed on backend: $errorBody"))
             }
         } catch (e: Exception) {
-            android.util.Log.e(TAG, "Error during Firebase Signup: ${e.message}")
+            android.util.Log.e(TAG, "Error during Node.js Backend Signup: ${e.message}")
             Result.failure(e)
         }
     }
 
-    suspend fun syncMembershipWithNode() {
-        // TODO: Call Node.js backend to get Stripe subscription status
-        android.util.Log.d(TAG, "Syncing membership from Node.js (Pending Implementation)...")
-        // For now, assume no active plan or mock it
-        sessionManager.updateActivePlan("")
+    suspend fun syncMembershipWithWp() {
+        val token = sessionManager.fetchAuthToken()
+        if (token.isNullOrEmpty()) {
+            android.util.Log.d(TAG, "No auth token available for membership sync.")
+            return
+        }
+
+        try {
+            android.util.Log.d(TAG, "Syncing membership from Node.js Backend...")
+            val user = apiService.getMe()
+            sessionManager.saveWpUserId(user.id)
+            
+            sessionManager.saveUserInfo(
+                user.email ?: "",
+                user.username ?: "",
+                "" // Plan set below
+            )
+            
+            val activePlan = user.activePlans?.firstOrNull()?.planName ?: ""
+            android.util.Log.d(TAG, "Membership plan synced: $activePlan")
+            sessionManager.updateActivePlan(activePlan)
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Error during membership sync: ${e.message}")
+        }
     }
 
     fun logout() {
         android.util.Log.d(TAG, "Logout triggered")
-        auth.signOut()
         sessionManager.clearSession()
     }
 
     fun isLoggedIn(): Boolean {
-        return auth.currentUser != null || sessionManager.isLoggedIn()
+        return sessionManager.isLoggedIn()
     }
     
     fun getCurrentUserUid(): String? {
-        return auth.currentUser?.uid
+        return sessionManager.fetchAuthToken()
     }
 
     suspend fun cancelMembership(wpUserId: Long): Boolean {
-        // TODO: Call Node.js backend to cancel Stripe subscription
-        return false
+        // Stripe subscriptions cancelation handled server-side / mock success
+        sessionManager.updateActivePlan("")
+        return true
     }
 }

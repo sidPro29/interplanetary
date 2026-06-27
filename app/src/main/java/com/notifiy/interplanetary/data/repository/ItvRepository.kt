@@ -17,7 +17,6 @@ class ItvRepository @Inject constructor(
     private val apiService: ApiService,
     @ApplicationContext private val context: Context
 ) {
-    // In-memory cache variables to store data
     private var cachedVideos: List<Post>? = null
     private var cachedMovies: List<Post>? = null
     private var cachedTvShows: List<Post>? = null
@@ -36,8 +35,13 @@ class ItvRepository @Inject constructor(
             } else {
                 context.assets.open(filename).bufferedReader().use { it.readText() }
             }
-            val type = object : TypeToken<List<Post>>() {}.type
-            gson.fromJson<List<Post>>(jsonString, type)
+            if (jsonString.contains("\"results\"")) {
+                val response = gson.fromJson(jsonString, com.notifiy.interplanetary.data.model.AssetResponse::class.java)
+                response.results
+            } else {
+                val listType = object : TypeToken<List<Post>>() {}.type
+                gson.fromJson(jsonString, listType)
+            }
         } catch (e: Exception) {
             e.printStackTrace()
             emptyList()
@@ -46,8 +50,7 @@ class ItvRepository @Inject constructor(
 
     private fun saveToInternal(filename: String, posts: List<Post>) {
         try {
-            val type = object : TypeToken<List<Post>>() {}.type
-            val jsonString = gson.toJson(posts, type)
+            val jsonString = gson.toJson(posts)
             getInternalFile(filename).writeText(jsonString)
         } catch (e: Exception) {
             e.printStackTrace()
@@ -71,7 +74,7 @@ class ItvRepository @Inject constructor(
 
     suspend fun updateVideos(): List<Post> = withContext(Dispatchers.IO) {
         try {
-            val results = apiService.getVideos()
+            val results = apiService.getVideosList()
             cachedVideos = results
             saveToInternal("videos_data.json", results)
             results
@@ -83,7 +86,7 @@ class ItvRepository @Inject constructor(
 
     suspend fun updateMovies(): List<Post> = withContext(Dispatchers.IO) {
         try {
-            val results = apiService.getMovies()
+            val results = apiService.getMoviesList()
             cachedMovies = results
             saveToInternal("movies_data.json", results)
             results
@@ -95,7 +98,7 @@ class ItvRepository @Inject constructor(
 
     suspend fun updateTVShows(): List<Post> = withContext(Dispatchers.IO) {
         try {
-            val results = apiService.getTVShows()
+            val results = apiService.getTVShowsList()
             cachedTvShows = results
             saveToInternal("tvshows_data.json", results)
             results
@@ -117,10 +120,6 @@ class ItvRepository @Inject constructor(
         return cachedTvShows ?: getInitialTVShows()
     }
 
-    /**
-     * Combined method to replace the old Firebase Asset sync.
-     * Maps all assets from WP to a list of pairs with their filtering tags.
-     */
     suspend fun getAllAssetsWithTags(): List<Pair<Post, List<String>>> {
         val videos = getVideos()
         val movies = getMovies()
@@ -131,10 +130,8 @@ class ItvRepository @Inject constructor(
         return allPosts.map { post ->
             val tags = mutableListOf<String>()
             
-            // Add category as search tag
             post.category.let { 
                 tags.add(it) 
-                // Add plural versions for backward compatibility with UI filters
                 when (it.lowercase()) {
                     "video" -> tags.add("videos")
                     "movie" -> tags.add("movies")
@@ -142,29 +139,23 @@ class ItvRepository @Inject constructor(
                 }
             }
             
-            // Add tags from the API (split by comma)
             post.tag?.let { t -> 
                 tags.addAll(t.split(",").map { it.trim() }.filter { it.isNotEmpty() }) 
             }
             
-            // Add genre from the API (split by comma)
             post.genre?.let { g -> 
                 tags.addAll(g.split(",").map { it.trim() }.filter { it.isNotEmpty() }) 
             }
             
-            // Fallback: If "Top 10" or other critical categories are in the title/desc, add them
-            // This ensures the Home Stacks still work even if tags are temporarily missing in API
             val titleStr = post.title.rendered.lowercase()
             val descStr = post.description?.lowercase() ?: ""
             val tagsStr = post.tag?.lowercase() ?: ""
             val genreStr = post.genre?.lowercase() ?: ""
-            
             val combinedText = "$tagsStr $genreStr $descStr"
             
             if (tagsStr.contains("live 24/7")) tags.add("Live TV")
             if (tagsStr.contains("our top 10")) tags.add("Our Top 10")
             if (tagsStr.contains("binge videos")) tags.add("Binge Videos")
-            // Item 4 & 5 (all tvshows, all movies) handled at ViewModel level or by category tag
             if (titleStr.contains("space to ground")) tags.add("Space-to-Ground Report")
             if (combinedText.contains("news")) tags.add("News")
             if (combinedText.contains("talk show")) tags.add("Talk-Shows")
@@ -176,7 +167,6 @@ class ItvRepository @Inject constructor(
         }
     }
 
-    // Retaining for backward compatibility with ViewModel names
     suspend fun getFirebasePosts(): List<Pair<Post, List<String>>> {
         return getAllAssetsWithTags()
     }
@@ -187,4 +177,3 @@ class ItvRepository @Inject constructor(
         cachedTvShows = null
     }
 }
-
