@@ -33,8 +33,10 @@ android {
 
     buildTypes {
         debug {
-            buildConfigField("String", "STRIPE_PUBLISHABLE_KEY", "\"${localProperties.getProperty("stripe.test.publishable.key") ?: ""}\"")
-            buildConfigField("String", "STRIPE_SECRET_KEY", "\"${localProperties.getProperty("stripe.test.secret.key") ?: ""}\"")
+            val pub = localProperties.getProperty("stripe.test.publishable.key") ?: ""
+            val sec = localProperties.getProperty("stripe.test.secret.key") ?: ""
+            buildConfigField("String", "STRIPE_PUBLISHABLE_KEY", "\"$pub\"")
+            buildConfigField("String", "STRIPE_SECRET_KEY", "\"$sec\"")
             buildConfigField("String", "WP_ADMIN_USER", "\"${localProperties.getProperty("wp.admin.user") ?: ""}\"")
             buildConfigField("String", "WP_ADMIN_PASSWORD", "\"${localProperties.getProperty("wp.admin.password") ?: ""}\"")
         }
@@ -44,8 +46,10 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            buildConfigField("String", "STRIPE_PUBLISHABLE_KEY", "\"${localProperties.getProperty("stripe.live.publishable.key") ?: ""}\"")
-            buildConfigField("String", "STRIPE_SECRET_KEY", "\"${localProperties.getProperty("stripe.live.secret.key") ?: ""}\"")
+            val pub = localProperties.getProperty("stripe.live.publishable.key") ?: ""
+            val sec = localProperties.getProperty("stripe.live.secret.key") ?: ""
+            buildConfigField("String", "STRIPE_PUBLISHABLE_KEY", "\"$pub\"")
+            buildConfigField("String", "STRIPE_SECRET_KEY", "\"$sec\"")
             buildConfigField("String", "WP_ADMIN_USER", "\"${localProperties.getProperty("wp.admin.user") ?: ""}\"")
             buildConfigField("String", "WP_ADMIN_PASSWORD", "\"${localProperties.getProperty("wp.admin.password") ?: ""}\"")
         }

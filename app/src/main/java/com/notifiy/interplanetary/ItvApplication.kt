@@ -13,10 +13,19 @@ class ItvApplication : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         // Initialize Stripe
-        com.stripe.android.PaymentConfiguration.init(
-            applicationContext,
-            BuildConfig.STRIPE_PUBLISHABLE_KEY
-        )
+        try {
+            val publishableKey = BuildConfig.STRIPE_PUBLISHABLE_KEY
+            if (publishableKey.isNotBlank()) {
+                com.stripe.android.PaymentConfiguration.init(
+                    applicationContext,
+                    publishableKey
+                )
+            } else {
+                android.util.Log.w("ItvApplication", "Stripe publishable key is not set")
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ItvApplication", "Failed to initialize Stripe: ${e.message}", e)
+        }
     }
 
     override fun newImageLoader(): ImageLoader {
